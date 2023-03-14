@@ -1,0 +1,264 @@
+---
+title: "机器学习拟合"
+output: html_notebook
+---
+
+This is an [R Markdown](http://rmarkdown.rstudio.com) Notebook. When you execute code within the notebook, the results appear beneath the code.
+
+Try executing this chunk by clicking the *Run* button within the chunk or by placing your cursor inside it and pressing *Ctrl+Shift+Enter*.Add a new chunk by clicking the *Insert Chunk* button on the toolbar or by pressing *Ctrl+Alt+I*. When you save the notebook, an HTML file containing the code and output will be saved alongside it (click the *Preview* button or press *Ctrl+Shift+K* to preview the HTML file).
+
+The preview shows you a rendered HTML copy of the contents of the editor. Consequently, unlike *Knit*, *Preview* does not run any R code chunks. Instead, the output of the chunk when it was last run in the editor is displayed
+
+(如何画R2图)
+
+假设已有数据集，用Boston房价做测试
+
+#对数据进行预处理
+
+```{r}
+library(xgboost)
+library(ggplot2)
+library(mlbench)
+library(ggpubr)
+library('caret')
+# 导入数据集
+data(BostonHousing)
+train_df <- as.data.frame(BostonHousing)
+ggdensity(train_df,x='indus')
+```
+
+```{r}
+
+```
+
+```{r}
+# 划分训练集和测试集
+set.seed(1225)#保证可重复性
+train_idx <- sample(nrow(train_df), 0.8 * nrow(train_df))
+train <- train_df[train_idx, ]
+test <- train_df[-train_idx, ]
+```
+
+为caret划分数据集
+
+```{r}
+
+set.seed(1225)
+preproc <- preProcess(train[,-14], method=c("center", "scale"))
+training <- predict(preproc,train[,-14])
+training[] <- lapply(training, function(x) as.numeric(as.character(x)))
+training <- as.matrix(training)
+preproc <- preProcess(test[,-14], method=c("center", "scale"))
+testing <- predict(preproc,test[,-14])
+testing[] <- lapply(testing, function(x) as.numeric(as.character(x)))
+testing <- as.matrix(testing)
+y <- test[,14]
+```
+
+确定lasso参数
+
+```{r}
+#选择参数
+ctrl <- trainControl(method = "cv", number = 10, verboseIter = FALSE,returnResamp = "all",summaryFunction = defaultSummary, returnData = TRUE, savePredictions = TRUE)
+
+lassomodel <- train(training, y, method = "glmnet", trControl = ctrl)
+```
+
+```{r}
+'rmse_df <- data.frame(lambda = lassomodel[["pred"]][["lambda"]], pred = lassomodel[["pred"]][["pred"]],pred = lassomodel[["pred"]][["obs"]])
+rmse_df[, 4] <- (rmse_df[, 3] - rmse_df[, 2])^2'
+'ggplot(rmse_df, aes(x = log(lambda), y = log(V4))) +
+  geom_line() +
+  scale_x_continuous(name = "log(lambda)") +
+  scale_y_continuous(name = "RMSE")'
+test_pred <- predict(lassomodel, newdata = testing)
+rmse(test_pred, test$medv)
+```
+
+```{r}
+tempimportance <- varImp(lassomodel, scale = FALSE)
+lassoimportance <- data.frame(tempimportance$importance)
+library(dplyr)
+lassoimportance <- arrange(lassoimportance, desc(Overall))
+```
+
+为xgb划分数据集
+
+```{r}
+# 准备数据
+#data要求传入numeric型matrix 不是numeric需要
+train[] <- lapply(train, function(x) as.numeric(as.character(x)))
+dtrain <- xgb.DMatrix(data = as.matrix(train[,-14]), label = train$medv)
+#前14列是自变量，label代表的是要预测的因变量
+test[] <- lapply(test, function(x) as.numeric(as.character(x)))
+dtest <- xgb.DMatrix(data = as.matrix(test[,-14]), label = test$medv)
+```
+
+```{r}
+# 定义参数
+params <- list(
+  objective = "reg:squarederror", # 使用线性回归目标函数
+  eval_metric = "rmse", # 使用均方根误差作为评估指标
+  eta = 0.1, # 学习率
+  max_depth = 6, # 树的最大深度
+  subsample = 0.8, # 训练集采样比例
+  colsample_bytree = 0.8 # 特征采样比例
+)
+```
+
+创建
+
+```{r}
+# 创建训练和测试集合
+train <- agaricus.train
+test <- agaricus.test
+
+# 设置watchlist
+watchlist <- list(train=train, test=test)
+
+```
+
+```{r}
+# 训练模型
+'''xgb_model <- xgb.train(params = params, data = dtrain, nrounds = 100, 
+                       watchlist = list(train = dtrain, test = dtest),  
+                       early_stopping_rounds = 10, # 停止条件
+                       verbose = FALSE) # 取消输出信息'''
+```
+
+```{r}
+xgb_cv <- xgb.cv(data = dtrain, nrounds = 100,nfold=10,
+                 watchlist = list(train = dtrain, test = dtest),
+                 early_stopping_rounds = 10, # 停止条件
+                       verbose = FALSE,prediction = TRUE) # 取消输出信息
+```
+
+```{r}
+xgb_cv <- xgb.cv(params = params, data = dtrain, nrounds = 100,nfold=10,
+                 watchlist = list(train = dtrain, test = dtest),
+                 early_stopping_rounds = 10, # 停止条件
+                       verbose = FALSE,prediction = TRUE) # 取消输出信息
+```
+
+```{r}
+# 预测新数据
+best_round <- which.min(xgb_cv$evaluation_log$test_rmse_mean)#提取bestround
+#训练最终模型
+xgb_model <- xgb.train(params = params, data = dtrain, nrounds = best_round, 
+                       watchlist = list(train = dtrain, test = dtest),  
+                       early_stopping_rounds = 10, # 停止条件
+                       verbose = FALSE) # 取消输出信息
+
+```
+
+```{r}
+pred <- predict(xgb_model, dtest)
+```
+
+对重要性进行排名
+
+```{r}
+importance <- xgb.importance(feature_names = names(train[,-14]), model = xgb_model)
+print(importance)
+```
+
+绘制重要性排名
+
+```{r}
+ggplot(data = importance, aes(x = Feature, y = Gain)) + 
+  geom_bar(stat = "identity", fill = "steelblue") +
+  ggtitle("Variable Importance") +
+  theme(plot.title = element_text(hjust = 0.5))
+```
+
+绘制拟合过程图
+
+```{r}
+# 提取性能数据
+evals_result <- xgb_model$evaluation_log
+evals_result$iter <- 1:nrow(evals_result)
+# 绘制曲线图
+ggplot(evals_result, aes(x=iter, y=test_rmse)) + 
+  geom_line() + 
+  xlab("Number of Trees") + 
+  ylab("Test Error") + 
+  ggtitle("Model Performance vs. Number of Trees")
+```
+
+十倍交叉验证tree
+
+```{r}
+library(xgboost)
+library(caret)
+
+# 载入数据
+data(BostonHousing)
+train_df <- as.data.frame(BostonHousing)
+x <- train_df[, -14] # 特征变量
+y <- train_df[, 14] # 目标变量
+x[] <- lapply(x, function(x) as.numeric(as.character(x)))
+y[] <- lapply(y, function(x) as.numeric(as.character(x)))
+x <- as.matrix(x)
+```
+
+```{r}
+# 使用caret包的trainControl函数设置10倍交叉验证参数
+ctrl <- trainControl(
+  method = "repeatedcv", # 使用10倍交叉验证
+  repeats = 10, # 重复3次交叉验证
+  verboseIter = FALSE,
+  returnData = FALSE,
+  returnResamp = "all", # 返回所有重复和次数的结果
+  savePredictions = "final"
+)
+
+
+```
+
+```{r}
+# 使用caret包的train函数进行训练
+set.seed(123)
+model <- train(
+  x = x,
+  y = y,
+  method = "xgbTree",
+  trControl = ctrl,
+  metric = "RMSE",
+  verbose = FALSE,
+  tuneLength = 5, # 使用5个不同的树数进行调参
+  xgbTree.method = "hist", # 使用xgbTree方法
+  xgbTree.max.depth = 6, # 设置树的最大深度
+  xgbTree.booster = "gbtree", # 使用gbtree booster
+  xgbTree.eta = 0.1, # 设置学习率
+  xgbTree.subsample = 0.8, # 设置子采样率
+  xgbTree.colsample_bytree = 0.8, # 设置特征采样率
+  xgbTree.min_child_weight = 1 # 设置最小子节点权重
+)
+
+
+
+```
+
+```{r}
+# 输出交叉验证结果
+print(model$resample)
+
+# 输出平均交叉验证结果
+print(model$aggregate)
+```
+
+```{r}
+library(pROC)
+test_labels <- ifelse(pred >= 0.5, 1, 0)
+print(test_labels)
+```
+
+```{r}
+library(ROCR)
+pred <- prediction(test_labels, test$target)
+perf <- performance(pred, "tpr", "fpr")
+```
+
+$$
+MAE = \frac{1}{n} \sum_{i=1}^{n} |y_i - \hat{y_i}|
+$$
